@@ -20,6 +20,7 @@ const STEPS: Step[] = [
 
 
 import { useRouter } from "next/navigation";
+import { supabase } from "@/lib/supabase";
 
 export default function OnboardingPage() {
     const router = useRouter();
@@ -35,9 +36,54 @@ export default function OnboardingPage() {
     const [isScraping, setIsScraping] = useState(false);
     const [scrapedItems, setScrapedItems] = useState<any[]>([]);
 
-    const handleNext = () => {
+    const [isSaving, setIsSaving] = useState(false);
+
+    const handleNext = async () => {
         if (currentStep === 3) {
-            router.push('/');
+            setIsSaving(true);
+            try {
+                if (!supabase) throw new Error("Database connection not valid.");
+
+                // 1. Create Hotel
+                const { data: hotel, error: hotelError } = await supabase
+                    .from('hotels')
+                    .insert({
+                        name: formData.hotelName,
+                        website_url: formData.websiteUrl,
+                        clover_merchant_id: formData.cloverKey,
+                        voice_id: formData.voiceId,
+                        phone_number: "+1512555" + Math.floor(Math.random() * 10000).toString().padStart(4, '0') // Generate random mock number
+                    })
+                    .select()
+                    .single();
+
+                if (hotelError) throw hotelError;
+
+                // 2. Create Menu Items
+                if (scrapedItems.length > 0 && hotel) {
+                    const menuData = scrapedItems.map(item => ({
+                        hotel_id: hotel.id,
+                        name: item.name,
+                        description: item.description,
+                        price: typeof item.price === 'number' ? item.price : parseFloat(item.price),
+                        category: "Imported",
+                        is_available: true
+                    }));
+
+                    const { error: menuError } = await supabase
+                        .from('menu_items')
+                        .insert(menuData);
+
+                    if (menuError) throw menuError;
+                }
+
+                router.push('/');
+            } catch (error) {
+                console.error("Error saving onboarding data:", error);
+                alert("Failed to save setup. Please try again.");
+            } finally {
+                setIsSaving(false);
+            }
             return;
         }
         if (currentStep < 3) setCurrentStep(c => c + 1);
