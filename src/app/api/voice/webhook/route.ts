@@ -1,69 +1,68 @@
-
 import { NextResponse } from 'next/server';
-
-// This is the webhook endpoint that Retell AI / Vapi would call when a phone call is received.
-// Documentation: https://docs.retellai.com/api-reference/agents/create-agent
+import { supabase } from '@/lib/supabase';
 
 interface InboundPayload {
     call_id: string;
     from_number: string;
-    to_number: string; // The specific hotel's phone number
+    to_number: string;
 }
 
-// MOCK DATABASE LOOKUP
-const MOCK_HOTELS: Record<string, any> = {
-    // Demo Hotel Number
-    "+15125550198": {
-        name: "Grand Austin Hotel",
-        prompt_base: "You are the helpful front desk and room service AI for Grand Austin Hotel. Be polite, concise, and professional.",
-        menu: [
-            { item: "Club Sandwich", price: 18, modifiers: ["No Mayo", "Extra Bacon"] },
-            { item: "Caesar Salad", price: 14, modifiers: ["Chicken", "Shrimp"] },
-            { item: "Diet Coke", price: 4 },
-        ]
-    }
-};
 
 export async function POST(req: Request) {
     try {
-        const payload: InboundPayload = await req.json();
-        const hotel = MOCK_HOTELS[payload.to_number] || MOCK_HOTELS["+15125550198"]; // Fallback to demo
+        if (!supabase) {
+            return NextResponse.json({ error: "Database connection not configured" }, { status: 500 });
+        }
 
-        if (!hotel) {
-            // Reject call or play generic message if number not found
+        const payload: InboundPayload = await req.json();
+
+        // 1. Find the Hotel by Phone Number
+        const { data: hotel, error: hotelError } = await supabase
+            .from('hotels')
+            .select('*')
+            .eq('phone_number', payload.to_number)
+            .single();
+
+        if (hotelError || !hotel) {
+            console.error("Hotel not found for number:", payload.to_number);
+            // Fallback for demo if no hotel found in DB, or return 404
             return NextResponse.json({ error: "Hotel not found" }, { status: 404 });
         }
 
-        // DYNAMIC PROMPT CONSTRUCTION
-        // We inject the specific hotel's menu and context into the system prompt securely.
+        // 2. Fetch Menu Items for this Hotel
+        const { data: menuItems, error: menuError } = await supabase
+            .from('menu_items')
+            .select('name, price, category, is_available')
+            .eq('hotel_id', hotel.id)
+            .eq('is_available', true);
+
+        const menuContext = menuItems && menuItems.length > 0
+            ? JSON.stringify(menuItems.map(m => ({ item: m.name, price: m.price })), null, 2)
+            : "No menu items available currently.";
+
+        // 3. Construct System Prompt
         const systemPrompt = `
-      ${hotel.prompt_base}
-      
+      You are the AI concierge for ${hotel.name}.
       Your goal is to take room service orders or answer questions about the hotel.
       
-      Here is the Current Menu:
-      ${JSON.stringify(hotel.menu, null, 2)}
+      Current Menu:
+      ${menuContext}
       
       Rules:
-      1. Always confirm the room number at the start.
-      2. If ordering food, ask for any dietary restrictions.
-      3. For "Club Sandwich", ask if they want white or wheat bread.
+      1. Always confirm the room number.
+      2. If ordering food, ask for dietary restrictions.
+      3. Be concise and professional.
       4. If the user asks for something not on the menu, politely decline.
       
       You have access to the following tools:
       - place_order(room_number, items[])
-      - check_availability(item_name)
-      - transfer_to_human()
     `;
 
-        // Return the configuration for this specific call session
-        // This tells the Voice Provider (Retell/Vapi) how to behave involves standard LLM parameters.
         return NextResponse.json({
-            agent_id: "agent_12345", // The base agent template ID
-            llm_websocket_url: "wss://api.openai.com/v1/realtime", // Or your custom LLM proxy
-            voice_id: "11labs-rachel", // ElevenLabs Voice ID
+            agent_id: "agent_12345", // In a real app, this might come from the DB too
+            llm_websocket_url: "wss://api.openai.com/v1/realtime",
+            voice_id: hotel.voice_id || "female-1",
             system_prompt: systemPrompt,
-            // Function Calling Definitions would go here normally
             tools: [
                 {
                     type: "function",

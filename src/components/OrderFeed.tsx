@@ -20,7 +20,8 @@ export function OrderFeed() {
     const [isLoading, setIsLoading] = useState(true);
 
     useEffect(() => {
-        if (!supabase) {
+        const client = supabase;
+        if (!client) {
             console.error("Supabase client not initialized");
             setIsLoading(false);
             return;
@@ -29,7 +30,7 @@ export function OrderFeed() {
         // 1. Fetch initial orders
         const fetchOrders = async () => {
             try {
-                const { data, error } = await supabase
+                const { data, error } = await client
                     .from('orders')
                     .select(`
                         id,
@@ -67,7 +68,7 @@ export function OrderFeed() {
         fetchOrders();
 
         // 2. Subscribe to Realtime Inserts
-        const channel = supabase
+        const channel = client
             .channel('schema-db-changes')
             .on(
                 'postgres_changes',
@@ -99,7 +100,7 @@ export function OrderFeed() {
             .subscribe();
 
         return () => {
-            if (supabase) supabase.removeChannel(channel);
+            client.removeChannel(channel);
         };
     }, []);
 
