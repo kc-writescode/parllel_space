@@ -1,4 +1,3 @@
-
 "use client";
 
 import { useState, useEffect } from "react";
@@ -16,55 +15,56 @@ interface Order {
     total: string;
 }
 
-const INITIAL_MOCK_ORDERS: Order[] = [
-    { id: "ORD-001", room: "304", items: ["Club Sandwich", "Iced Tea"], status: "processing", time: "2 min ago", total: "$24.50" },
-    { id: "ORD-002", room: "112", items: ["Extra Towels", "Shampoo"], status: "pending", time: "Just now", total: "$0.00" },
-    { id: "ORD-003", room: "505", items: ["Caesar Salad", "Sparkling Water"], status: "completed", time: "15 min ago", total: "$18.00" },
-];
-
 export function OrderFeed() {
-    const [orders, setOrders] = useState<Order[]>(INITIAL_MOCK_ORDERS);
-    const [isConnected, setIsConnected] = useState(false);
+    const [orders, setOrders] = useState<Order[]>([]);
+    const [isLoading, setIsLoading] = useState(true);
 
     useEffect(() => {
-        if (!supabase) return; // Fallback to mock if no client
+        if (!supabase) {
+            console.error("Supabase client not initialized");
+            setIsLoading(false);
+            return;
+        }
 
-        // 1. Fetch initial orders (if table exists)
+        // 1. Fetch initial orders
         const fetchOrders = async () => {
-            if (!supabase) return;
-            const { data, error } = await supabase
-                .from('orders')
-                .select(`
-            id,
-            room_number,
-            status,
-            total_amount,
-            created_at,
-            order_items (
-              menu_items (name)
-            )
-          `)
-                .order('created_at', { ascending: false })
-                .limit(10);
+            try {
+                const { data, error } = await supabase
+                    .from('orders')
+                    .select(`
+                        id,
+                        room_number,
+                        status,
+                        total_amount,
+                        created_at,
+                        order_items (
+                          menu_items (name)
+                        )
+                    `)
+                    .order('created_at', { ascending: false })
+                    .limit(10);
 
-            if (!error && data && data.length > 0) {
-                // Transform DB shape to UI shape
-                const transformedOrders = data.map((o: any) => ({
-                    id: o.id,
-                    room: o.room_number,
-                    items: o.order_items?.map((oi: any) => oi.menu_items?.name || "Unknown Item") || [],
-                    status: o.status,
-                    time: new Date(o.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
-                    total: `$${o.total_amount}`
-                }));
-                setOrders(transformedOrders);
-                setIsConnected(true);
+                if (error) throw error;
+
+                if (data) {
+                    const transformedOrders = data.map((o: any) => ({
+                        id: o.id,
+                        room: o.room_number,
+                        items: o.order_items?.map((oi: any) => oi.menu_items?.name || "Unknown Item") || [],
+                        status: o.status,
+                        time: new Date(o.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+                        total: `$${o.total_amount}`
+                    }));
+                    setOrders(transformedOrders);
+                }
+            } catch (error) {
+                console.error("Error fetching orders:", error);
+            } finally {
+                setIsLoading(false);
             }
         };
 
         fetchOrders();
-
-        if (!supabase) return;
 
         // 2. Subscribe to Realtime Inserts
         const channel = supabase
@@ -76,24 +76,23 @@ export function OrderFeed() {
                     schema: 'public',
                     table: 'orders',
                 },
-                async (payload) => {
-                    // Ideally fetch full relations, but for now just show the new order
-                    // In a real app we'd fetch the related items immediately
+                (payload) => {
                     const newOrder = payload.new as any;
 
+                    // Optimistic update - in reality we might want to fetch relations
                     setOrders((prev) => [
                         {
                             id: newOrder.id,
                             room: newOrder.room_number,
-                            items: ["Fetching items..."], // Placeholder until refresh
+                            items: ["New Order..."], // Placeholder until refresh/fetch
                             status: newOrder.status,
-                            time: "Just now",
+                            time: new Date(newOrder.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
                             total: `$${newOrder.total_amount}`
                         },
                         ...prev
                     ].slice(0, 10));
 
-                    // Trigger a re-fetch to get the actual items
+                    // Trigger refresh to get relation data (items names)
                     fetchOrders();
                 }
             )
@@ -104,29 +103,6 @@ export function OrderFeed() {
         };
     }, []);
 
-    // Simulating incoming orders ONLY if not connected to Supabase
-    useEffect(() => {
-        if (isConnected) return; // Don't simulate if real data is flowing
-
-        const interval = setInterval(() => {
-            if (Math.random() > 0.7) return; // 30% chance of new order
-
-            const newOrder: Order = {
-                id: "ORD-" + Math.floor(Math.random() * 1000),
-                room: ["201", "405", "118", "Ph-Lobby"][Math.floor(Math.random() * 4)],
-                items: [["Burger", "Fries"], ["Pizza", "Coke"], ["Extra Pillow"], ["Wake Up Call"]][Math.floor(Math.random() * 4)],
-                status: "pending",
-                time: "Just now",
-                total: "$" + (Math.random() * 50 + 10).toFixed(2)
-            };
-
-            setOrders(prev => [newOrder, ...prev].slice(0, 10)); // Keep only recent 10
-        }, 8000);
-
-        return () => clearInterval(interval);
-    }, [isConnected]);
-
-
     return (
         <div className="rounded-xl border border-neutral-800 bg-neutral-900/50 backdrop-blur-sm overflow-hidden h-full flex flex-col">
             <div className="p-4 border-b border-neutral-800 flex items-center justify-between">
@@ -135,11 +111,19 @@ export function OrderFeed() {
                     Live Order Feed
                 </h3>
                 <span className="text-xs font-medium text-emerald-400 bg-emerald-400/10 px-2 py-1 rounded-full animate-pulse">
-                    Monitoring
+                    Realtime
                 </span>
             </div>
 
             <div className="flex-1 overflow-y-auto p-4 space-y-3">
+                {isLoading && (
+                    <div className="text-center py-8 text-gray-500 text-sm">Loading orders...</div>
+                )}
+
+                {!isLoading && orders.length === 0 && (
+                    <div className="text-center py-8 text-gray-500 text-sm">No orders yet.</div>
+                )}
+
                 <AnimatePresence initial={false}>
                     {orders.map((order) => (
                         <motion.div
